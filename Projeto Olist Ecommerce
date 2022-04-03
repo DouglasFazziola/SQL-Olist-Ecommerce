@@ -1,0 +1,167 @@
+/*
+Retorne a quantidade de itens vendidos em cada categoria por estado em que o 
+cliente se encontra, mostrando somente categorias que tenham vendido uma quantidade de items acima de 1000.
+*/
+
+SELECT
+	count(pd.product_id) as quantidade,
+	coalesce(pd.product_category_name,'indefinida') as categoria,
+	cd.customer_state as estado
+FROM olist_products_dataset as pd
+INNER JOIN olist_order_items_dataset as id on pd.product_id = id.product_id
+INNER JOIN olist_orders_dataset as od on id.order_id = od.order_id
+INNER JOIN olist_customers_dataset as cd on od.customer_id = cd.customer_id
+GROUP BY categoria, estado
+HAVING quantidade > 1000
+
+
+/*
+Mostre os 5 clientes (customer_id) que gastaram mais dinheiro em compras, 
+qual foi o valor total de todas as compras deles, quantidade de compras, e valor médio gasto por compras. 
+Ordene os mesmos por ordem decrescente pela média do valor de compra.
+*/
+
+SELECT
+	clientes,
+	total_compras,
+	quantidade_compras,
+	media
+FROM(
+	SELECT
+		OD.customer_id AS clientes,
+		SUM(PD.payment_value) AS total_compras,
+		count(customer_id) AS quantidade_compras,
+		AVG(PD.payment_value) AS Media
+	FROM
+		olist_orders_dataset AS OD
+	INNER JOIN
+		olist_order_payments_dataset AS PD ON OD.order_id = PD.order_id
+	GROUP BY Clientes)
+ORDER BY Media DESC
+LIMIT 5
+
+/*
+Mostre o valor vendido total de cada vendedor (seller_id) em cada uma das categorias de produtos, 
+somente retornando os vendedores que nesse somatório e agrupamento venderam mais de $1000. 
+Desejamos ver a categoria do produto e os vendedores. Para cada uma dessas categorias, 
+mostre seus valores de venda de forma decrescente.
+*/
+
+SELECT
+	SD.seller_id AS Vendedor,
+	SUM(ID.price) AS 'Valor vendido',
+	coalesce(PD.product_category_name,'indefinida') AS Categoria
+FROM olist_sellers_dataset AS SD
+INNER JOIN olist_order_items_dataset AS ID ON SD.seller_id = ID.seller_id
+INNER JOIN olist_products_dataset AS PD ON ID.product_id = PD.product_id
+GROUP BY categoria, vendedor
+HAVING SUM(ID.price) > 1000
+ORDER by categoria ASC, SUM(ID.price) DESC
+
+/* 
+Retorne uma tabela analítica de todos os itens que foram vendidos, mostrando somente pedidos interestaduais. 
+Queremos saber quantos dias os fornecedores demoram para postar o produto, se o produto chegou ou não no prazo.
+*/
+
+SELECT
+	ID.product_id PRODUTO,
+	SD.seller_state AS ORIGEM,
+	CD.customer_state AS DESTINO,
+	CASE
+		WHEN od.order_estimated_delivery_date >= od.order_delivered_customer_date THEN 'NO PRAZO'
+		WHEN OD.order_estimated_delivery_date < od.order_delivered_customer_date THEN 'ATRASADO'
+		END 'SITUACAO DA ENTREGA',
+	round(julianday(OD.order_delivered_carrier_date) - julianday(OD.order_purchase_timestamp),0) AS 'DIAS PARA POSTAGEM'
+FROM olist_order_items_dataset AS ID
+INNER JOIN olist_sellers_dataset AS SD ON ID.seller_id = SD.seller_id
+INNER JOIN olist_orders_dataset AS OD ON ID.ORDER_ID = OD.order_id
+INNER JOIN olist_customers_dataset AS CD ON OD.customer_id = CD.customer_id
+WHERE ORIGEM <> DESTINO 
+AND OD.order_status = 'delivered'
+
+/*
+Retorne todos os pagamentos do cliente, com suas datas de aprovação, 
+valor da compra e o valor total que o cliente já gastou em todas as suas compras, 
+mostrando somente os clientes onde o valor da compra é diferente do valor total já gasto
+*/
+
+SELECT
+	CD.customer_id AS Cliente,
+	OD.order_approved_at AS 'Aprovacao do pagamento',
+	id.price AS 'Valor da compra',
+	sum(id.price) AS 'Valor total'
+FROM olist_customers_dataset AS CD
+INNER JOIN olist_orders_dataset AS OD ON CD.customer_id = OD.customer_id
+INNER JOIN olist_order_items_dataset AS ID ON OD.order_id = ID.order_id
+GROUP BY Cliente
+HAVING id.price <> sum(id.price)
+
+/*
+Retorne as categorias válidas, suas somas totais dos valores de vendas, 
+um ranqueamento de maior valor para menor valor junto com o somatório 
+acumulado dos valores pela mesma regra do ranqueamento.
+*/
+
+
+
+SELECT CATEGORIA
+		, VENDA_TOTAL
+		, SUM (VENDA_TOTAL) OVER ()AS ACUMULADO
+		, RANK (*) OVER (ORDER BY VENDA_TOTAL DESC) AS POSICAO
+
+ FROM 
+ (
+ SELECT P.product_category_name			AS CATEGORIA
+		, PG.payment_value				AS VENDA
+		, SUM(PG.payment_value)			AS VENDA_TOTAL
+ FROM olist_products_dataset P
+ INNER JOIN olist_order_items_dataset I ON I.product_id = P.product_id 
+ INNER JOIN olist_order_payments_dataset PG ON PG.order_id = I.order_id
+ INNER JOIN olist_orders_dataset O ON O.order_id = PG.order_id
+ WHERE P.product_category_name is NOT NULL
+ GROUP BY CATEGORIA
+ 
+) AS VENDAS_ACUMULADAS
+
+/*
+Crie uma view (SELLER_STATS) para mostrar por fornecedor, a quantidade de itens enviados, 
+o tempo médio de postagem após a aprovação da compra, a quantidade total de pedidos de cada Fornecedor, 
+note que trabalharemos na mesma query com 2 granularidades diferentes.
+*/
+CREATE VIEW SELLER_STATS AS 
+SELECT
+	ID.seller_id Fornecedor,
+	count(*) Pedidos_enviados,
+	count(DISTINCT id.order_id) Total_Pedidos,
+	coalesce(
+		Round(
+			avg(
+				julianday (OD.order_delivered_carrier_date) - julianday (OD.order_approved_at)),1),'indeterminado') Tempo_Medio
+FROM
+	olist_order_items_dataset AS ID
+INNER JOIN
+	olist_orders_dataset AS OD ON ID.order_id = OD.order_id
+GROUP BY Fornecedor
+
+/* 
+Queremos dar um cupom de 10% do valor da última compra do cliente. 
+Porém os clientes elegíveis a este cupom devem ter feito uma compra anterior a última 
+(a partir da data de aprovação do pedido) que tenha sido maior ou igual o valor da última compra. 
+Crie uma querie que retorne os valores dos cupons para cada um dos clientes elegíveis.*/
+
+SELECT
+	CLIENTE,
+	sum(case when APROV=1 then COMPRA else 0 end) as ultimo,
+	sum(case when APROV=2 then COMPRA else 0 end) as penultimo,
+	(sum(case when APROV=1 then COMPRA else 0 end) * 0.10) AS DESCONTO
+FROM(
+	SELECT
+		CD.customer_unique_id AS CLIENTE,
+		ROW_NUMBER() OVER(PARTITION BY CD.customer_unique_id ORDER BY OD.order_approved_at) AS APROV,
+		PD.payment_value AS COMPRA
+	FROM olist_customers_dataset AS CD
+	INNER JOIN olist_orders_dataset AS OD ON CD.customer_id = OD.customer_id
+	INNER JOIN olist_order_payments_dataset as PD ON OD.order_id = PD.order_id
+	WHERE order_approved_at IS NOT NULL)
+GROUP BY CLIENTE
+HAVING PENULTIMO >= ULTIMO
